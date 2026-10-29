@@ -4,7 +4,8 @@
 import { db, now } from './firebase.js';
 import { ref, onValue, update, runTransaction } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
 
-const W = 800, H = 450, DAY_MS = 120000, MAX_ANGRY = 5, BURN_MS = 10000, RUSH_MS = 18000;
+if (!CanvasRenderingContext2D.prototype.roundRect) CanvasRenderingContext2D.prototype.roundRect = function (x, y, w, h, r) { r = Math.min(r, w / 2, h / 2); this.moveTo(x + r, y); this.arcTo(x + w, y, x + w, y + h, r); this.arcTo(x + w, y + h, x, y + h, r); this.arcTo(x, y + h, x, y, r); this.arcTo(x, y, x + w, y, r); this.closePath(); };  // older iOS
+const W = 800, H = 450, DAY_MS = 120000, MAX_ANGRY = 5, BURN_MS = 14000, RUSH_MS = 18000, STOVE_MS = 6000;
 const TABLES = [[170,140],[340,140],[510,140],[170,300],[340,300],[510,300]].map(([x, y]) => ({ x, y }));
 const COUNTER = { x: 640, y: 96, w: 130, h: 230 };
 const qSlot = i => ({ x: 50 + i * 42, y: 405 });
@@ -14,14 +15,14 @@ const HAT = ['#ff9f1c', '#2ec4b6', '#e76f8b'];
 const DISH = ['🐟', '🍤', '🍨'];
 
 let gs = null, players = {}, gsRef, playerRef, opts, unsubs = [], timers = [], raf, hover = null, canvas, ctx, bg, ac;
-let me = null, wpos = {}, sel = null, floats = [], parts = [], last = 0;
+let me = null, wpos = {}, sel = null, cookSel = null, floats = [], parts = [], last = 0, dpr = 1, wake = null;
 const pos = {};
 
 export function startGame(o) {
   stopGame(); opts = o;
   const base = `rooms/${o.roomId}`;
   gsRef = ref(db, `${base}/gameState`); playerRef = ref(db, `${base}/players/${o.uid}`);
-  canvas = document.getElementById('canvas'); ctx = canvas.getContext('2d'); bg = makeBG();
+  canvas = document.getElementById('canvas'); dpr = Math.min(2, window.devicePixelRatio || 1); canvas.width = W * dpr; canvas.height = H * dpr; ctx = canvas.getContext('2d'); bg = makeBG();
   unsubs = [onValue(gsRef, s => { const n = s.val(); diff(gs, n); gs = n; syncShop(); }),
             onValue(ref(db, `${base}/players`), s => { players = s.val() || {}; })];
   canvas.onpointerdown = e => { beep(0, 0); click(toXY(e)); };
@@ -29,11 +30,14 @@ export function startGame(o) {
   timers = [setInterval(() => { if (me?.moved) { me.moved = false; update(playerRef, { px: Math.round(me.x), py: Math.round(me.y) }).catch(() => {}); } }, 150)];
   if (o.isHost) timers.push(setInterval(hostTick, 300));
   document.getElementById('btnNext').onclick = nextDay;
+  navigator.wakeLock?.request('screen').then(w => wake = w).catch(() => {});      // keep the phone awake
+  try { screen.orientation?.lock?.('landscape').catch(() => {}); } catch {}
   raf = requestAnimationFrame(frame);
 }
 export function stopGame() {
   unsubs.forEach(u => u()); unsubs = []; timers.forEach(clearInterval); timers = []; cancelAnimationFrame(raf);
-  gs = null; players = {}; me = null; wpos = {}; sel = null; floats = []; parts = [];
+  gs = null; players = {}; me = null; wpos = {}; sel = null; cookSel = null; floats = []; parts = [];
+  try { wake?.release?.(); screen.orientation?.unlock?.(); } catch {} wake = null;
   document.getElementById('shop')?.classList.add('d-none');
 }
 
@@ -49,6 +53,9 @@ const cref = id => ref(db, `rooms/${opts.roomId}/gameState/customers/${id}`);
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const order = () => Object.keys(players).sort();
 const readyList = () => custs().filter(c => c.state === 'ready').sort((a, b) => a.t - b.t).slice(0, 6);
+// Roles: with 2+ players exactly one is the cook (own kitchen screen), the rest are waiters. Solo = waiter + automatic kitchen.
+const hasCook = () => nPlayers() > 1 && Object.values(players).some(p => p.role === 'cook');
+const myRole = () => hasCook() && players[opts.uid]?.role === 'cook' ? 'cook' : 'waiter';
 const rushing = t => gs.rushAt && t >= gs.rushAt && t < gs.rushAt + RUSH_MS;
 const say = (x, y, txt, col = '#fff') => floats.push({ x, y, txt, col, life: 1.4 });
 
@@ -72,7 +79,9 @@ function diff(a, b) {
       else { say(p.x, p.y - 50, '😡 Left!', '#ff6b6b'); beep(140, .3, 'sawtooth', .06); }
     } else if (o.state !== n.state) {
       if (n.state === 'ready') { say(COUNTER.x + 65, COUNTER.y + 90, 'Order up!', '#9ff0ff'); beep(880, .15); }
-      if (o.state === 'ready' && n.state === 'cooking') { say(COUNTER.x + 65, COUNTER.y + 90, '🔥 Burnt!', '#ff9f1c'); beep(200, .25, 'square', .05); }
+      if (n.state === 'done' && myRole() === 'cook') beep(900, .15);
+      if (o.state === 'ordering' && n.state === 'cooking' && myRole() === 'cook') { say(400, 150, 'New order!', '#fff'); beep(700, .1); }
+      if ((o.state === 'ready' || o.state === 'done') && n.state === 'cooking') { say(COUNTER.x + 65, COUNTER.y + 90, '🔥 Burnt!', '#ff9f1c'); beep(200, .25, 'square', .05); }
     }
   }
 }
@@ -80,11 +89,13 @@ function diff(a, b) {
 /* ---------- Player input: tap a target, your waiter skates there, then acts ---------- */
 function pick(p) {
   if (!gs || gs.phase !== 'play') return null;
-  const rl = readyList(); for (let i = 0; i < rl.length; i++) if (Math.hypot(p.x - slotXY(i).x, p.y - slotXY(i).y) < 28) return { k: 'dish', id: rl[i].id, i };
-  for (const c of custs()) if (c.state === 'waiting' && pos[c.id] && Math.hypot(p.x - pos[c.id].x, p.y - pos[c.id].y) < 30) return { k: 'wait', id: c.id };
+  if (myRole() === 'cook') return pickCook(p);
+  const rl = readyList(); for (let i = 0; i < rl.length; i++) if (Math.hypot(p.x - slotXY(i).x, p.y - slotXY(i).y) < 34) return { k: 'dish', id: rl[i].id, i };
+  for (const c of custs()) if (c.state === 'waiting' && pos[c.id] && Math.hypot(p.x - pos[c.id].x, p.y - pos[c.id].y) < 36) return { k: 'wait', id: c.id };
   const i = tableAt(p); return i >= 0 ? { k: 'table', i } : null;
 }
 function click(p) {
+  if (myRole() === 'cook') return cookClick(p);
   const h = pick(p); if (!h || !me) return;
   if (h.k === 'wait') { sel = sel === h.id ? null : h.id; beep(520, .06); return; }
   me.pending = { ...h, who: sel }; sel = null;
@@ -107,7 +118,7 @@ async function perform(h) {
     if (claim.committed) { runTransaction(cref(w.id), v => v && v.state === 'waiting' ? { ...v, state: 'ordering', table: i, t: now() } : v); beep(500, .08); }
   } else if (c.state === 'ordering') {
     runTransaction(cref(c.id), v => v && v.state === 'ordering' ? { ...v, state: 'cooking', t: now() } : v); beep(600, .08);
-  } else if (carrying && ['cooking', 'ready', 'carried'].includes(c.state)) {
+  } else if (carrying && ['cooking', 'done', 'ready', 'carried'].includes(c.state)) {
     if (carrying.id === c.id) {
       const fast = Math.max(0, 12 - Math.floor((t - c.arrive) / 3000));
       const tip = Math.round((8 + fast) * (1 + 0.15 * gs.upgrades.skates) * (c.vip ? 2.5 : 1) * (carrying.burnt ? .5 : 1));
@@ -134,16 +145,18 @@ function hostTick() {
   for (const c of custs()) {
     const gone = () => { up[`customers/${c.id}`] = null; if (c.table != null) up[`tables/${c.table}`] = null; angry++; };
     if (c.state === 'waiting') { waiting++; if (t - c.arrive > pat(c)) gone(); }
-    else if (['ordering', 'cooking', 'ready', 'carried'].includes(c.state) && t - c.seatedAt > pat(c) * 2.2) gone();
+    else if (['ordering', 'cooking', 'done', 'ready', 'carried'].includes(c.state) && t - c.seatedAt > pat(c) * 2.2) gone();
     else if (c.state === 'ordering' && !c.seatedAt) up[`customers/${c.id}/seatedAt`] = t;
-    else if (c.state === 'cooking' && c.readyAt && t >= c.readyAt) { up[`customers/${c.id}/state`] = 'ready'; up[`customers/${c.id}/t`] = t; }
+    else if (c.state === 'cooking' && c.readyAt && t >= c.readyAt) { up[`customers/${c.id}/state`] = hasCook() ? 'done' : 'ready'; up[`customers/${c.id}/t`] = t; }   // human cook must plate it
+    else if (c.state === 'done' && !hasCook()) { up[`customers/${c.id}/state`] = 'ready'; up[`customers/${c.id}/stove`] = null; }
+    else if (c.state === 'done' && t - c.t > STOVE_MS) Object.assign(up, { [`customers/${c.id}/state`]: 'cooking', [`customers/${c.id}/readyAt`]: null, [`customers/${c.id}/stove`]: null, [`customers/${c.id}/burnt`]: true, [`customers/${c.id}/t`]: t });
     else if (c.state === 'ready' && t - c.t > BURN_MS) { Object.assign(up, { [`customers/${c.id}/state`]: 'cooking', [`customers/${c.id}/readyAt`]: null, [`customers/${c.id}/burnt`]: true, [`customers/${c.id}/t`]: t }); }
     else if (c.state === 'eating' && t >= c.eatEnd) up[`customers/${c.id}/state`] = 'paid';
-    if (c.state === 'cooking' && c.readyAt && t < c.readyAt) active++;
+    if ((c.state === 'cooking' && c.readyAt && t < c.readyAt) || c.state === 'done') active++;
     if (c.state === 'cooking' && !c.readyAt && up[`customers/${c.id}`] !== null) queue.push(c);
     if (c.state === 'carried' && !players[c.carrier]) { up[`customers/${c.id}/state`] = 'ready'; up[`customers/${c.id}/carrier`] = null; up[`customers/${c.id}/t`] = t; }
   }
-  queue.sort((a, b) => a.t - b.t).slice(0, Math.max(0, cap - active)).forEach(c => up[`customers/${c.id}/readyAt`] = t + cookTime());
+  if (!hasCook()) queue.sort((a, b) => a.t - b.t).slice(0, Math.max(0, cap - active)).forEach(c => up[`customers/${c.id}/readyAt`] = t + cookTime());
   if (!gs.rushAt) up.rushAt = gs.startAt + 40000 + Math.random() * 40000;
   if (t >= gs.nextSpawn && waiting < 3 + n) {
     const id = 'c' + t.toString(36) + Math.random().toString(36).slice(2, 4);
@@ -186,7 +199,7 @@ const lin = (g, y0, y1, stops) => { const l = g.createLinearGradient(0, y0, 0, y
 
 // Static room (wall, windows, wooden floor, door mat) drawn once to an offscreen canvas.
 function makeBG() {
-  const c = document.createElement('canvas'); c.width = W; c.height = H; const g = c.getContext('2d');
+  const c = document.createElement('canvas'); c.width = W * dpr; c.height = H * dpr; const g = c.getContext('2d'); g.scale(dpr, dpr);
   g.fillStyle = lin(g, 0, 72, [[0, '#f8ecd8'], [1, '#e0c59a']]); g.fillRect(0, 0, W, 72);
   for (let i = 0; i < 3; i++) {                                         // windows with sky + frosty hills
     const x = 90 + i * 230;
@@ -210,8 +223,10 @@ function makeBG() {
 function frame(ts) {
   raf = requestAnimationFrame(frame);
   const dt = Math.min(.05, (ts - (last || ts)) / 1000); last = ts;
-  ctx.drawImage(bg, 0, 0);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.drawImage(bg, 0, 0, W, H);
   const t = now(), list = gs ? custs() : [], ids = order();
+  if (gs && myRole() === 'cook') { drawKitchen(ts, t, list); return finish(dt, ts, t, list, ids); }   // cook sees the kitchen instead of the floor
   if (!me && players[opts.uid]) { const x = COUNTER.x + 22 + ids.indexOf(opts.uid) * 46; me = { x, y: 385, tx: x, ty: 385, pending: null }; }
   if (me && gs) {                                                       // skate toward the target, act on arrival
     const sp = (230 + 55 * gs.upgrades.skates) * dt, dx = me.tx - me.x, dy = me.ty - me.y, d = Math.hypot(dx, dy);
@@ -234,8 +249,8 @@ function frame(ts) {
     if (c.state === 'eating') drawDish(c.dish || 0, tb.x, tb.y + 14, 0.8);
     if (c.state === 'paid') drawCoins(tb.x + 34, tb.y + 14, ts);
     if (c.state === 'ordering') bubble(p.x + 30, p.y - 44, '!', '#d62839');
-    if (['cooking', 'ready', 'carried'].includes(c.state)) bubble(p.x + 30, p.y - 44, DISH[c.dish || 0], '#1b2a41');   // what this guest ordered
-    const lim = c.state === 'waiting' ? pat(c) : ['ordering', 'cooking', 'ready', 'carried'].includes(c.state) ? pat(c) * 2.2 : 0;
+    if (['cooking', 'done', 'ready', 'carried'].includes(c.state)) bubble(p.x + 30, p.y - 44, DISH[c.dish || 0], '#1b2a41');   // what this guest ordered
+    const lim = c.state === 'waiting' ? pat(c) : ['ordering', 'cooking', 'done', 'ready', 'carried'].includes(c.state) ? pat(c) * 2.2 : 0;
     if (lim) meter(p.x, p.y - 44, 1 - (t - (c.state === 'waiting' ? c.arrive : c.seatedAt || c.t)) / lim);
     if (c.state === 'waiting' && sel === c.id) { ctx.fillStyle = '#fff'; const b = Math.sin(ts / 150) * 4; ctx.beginPath(); ctx.moveTo(p.x - 8, p.y - 62 + b); ctx.lineTo(p.x + 8, p.y - 62 + b); ctx.lineTo(p.x, p.y - 50 + b); ctx.fill(); }
   }
@@ -246,7 +261,7 @@ function frame(ts) {
     drawDish(c.dish || 0, s.x, s.y, 0.95);
   });
   ids.forEach((uid, i) => {                                             // waiters (you skate instantly under your finger; others ease toward their synced position)
-    const pl = players[uid], isMe = uid === opts.uid, home = { x: COUNTER.x + 22 + i * 46, y: 385 };
+    const pl = players[uid]; if (hasCook() && pl.role === 'cook') return; const isMe = uid === opts.uid, home = { x: COUNTER.x + 22 + i * 46, y: 385 };
     let x, y, walk;
     if (isMe && me) { x = me.x; y = me.y; walk = me.skating; }
     else { const w = wpos[uid] ||= { ...home }, gx = pl.px ?? home.x, gy = pl.py ?? home.y; walk = Math.hypot(gx - w.x, gy - w.y) > 3; w.x += (gx - w.x) * .2; w.y += (gy - w.y) * .2; x = w.x; y = w.y; }
@@ -254,6 +269,12 @@ function frame(ts) {
     drawPenguin(x, y, { scarf: HAT[i % 3], t: ts, waiter: true, skates: true, tray: held ? held.dish || 0 : undefined, me: isMe, walk });
     ctx.fillStyle = '#fff'; ctx.font = 'bold 11px sans-serif'; ctx.textAlign = 'center'; ctx.fillText((pl.name || '').slice(0, 8), x, y + 56); ctx.textAlign = 'left';
   });
+  finish(dt, ts, t, list, ids);
+}
+
+// Shared overlays for both roles: sparks, floating text, lighting, rush banner, hint, HUD.
+function finish(dt, ts, t, list, ids) {
+  const waiting = list.filter(c => c.state === 'waiting');
   parts = parts.filter(p => (p.life -= dt) > 0);                         // coin sparks + floating text
   parts.forEach(p => { p.x += p.vx * dt; p.y += p.vy * dt; p.vy += 300 * dt; ctx.fillStyle = '#ffd23f'; ctx.beginPath(); ctx.arc(p.x, p.y, 4, 0, 7); ctx.fill(); });
   floats = floats.filter(f => (f.life -= dt) > 0);
@@ -261,16 +282,17 @@ function frame(ts) {
   const v = ctx.createRadialGradient(W / 2, H / 2, 200, W / 2, H / 2, 520);
   v.addColorStop(0, 'rgba(255,240,200,0)'); v.addColorStop(1, 'rgba(20,10,0,.38)'); ctx.fillStyle = v; ctx.fillRect(0, 0, W, H);
   if (!gs) return;
-  if (rushing(t)) { ctx.fillStyle = `rgba(214,40,57,${.75 + Math.sin(ts / 150) * .15})`; ctx.beginPath(); ctx.roundRect(W / 2 - 120, 76, 240, 30, 15); ctx.fill(); ctx.fillStyle = '#fff'; ctx.font = 'bold 16px sans-serif'; ctx.textAlign = 'center'; ctx.fillText('🔥 Rush hour: double customers!', W / 2, 96); ctx.textAlign = 'left'; }
+  const by = myRole() === 'cook' ? 144 : 76;
+  if (rushing(t)) { ctx.fillStyle = `rgba(214,40,57,${.75 + Math.sin(ts / 150) * .15})`; ctx.beginPath(); ctx.roundRect(W / 2 - 120, by, 240, 30, 15); ctx.fill(); ctx.fillStyle = '#fff'; ctx.font = 'bold 16px sans-serif'; ctx.textAlign = 'center'; ctx.fillText('🔥 Rush hour: double customers!', W / 2, by + 20); ctx.textAlign = 'left'; }
   const carrying = list.find(c => c.carrier === opts.uid);               // context hint
   const need = list.filter(c => c.state === 'ordering').length, wait = waiting.length;
-  const hint = carrying ? `Carrying ${DISH[carrying.dish || 0]}: deliver it to the table that ordered it` : need ? 'Tap a table with a raised flipper to take the order' : readyList().length ? 'Tap a dish at the counter to pick it up' : wait ? 'Tap a waiting penguin, then an empty table (or just a table)' : 'Waiting for guests…';
+  const hint = myRole() === 'cook' ? cookHint(list) : carrying ? `Carrying ${DISH[carrying.dish || 0]}: deliver it to the table that ordered it` : need ? 'Tap a table with a raised flipper to take the order' : readyList().length ? 'Tap a dish at the counter to pick it up' : wait ? 'Tap a waiting penguin, then an empty table (or just a table)' : 'Waiting for guests…';
   ctx.font = 'bold 13px sans-serif'; const tw = ctx.measureText(hint).width; ctx.fillStyle = 'rgba(14,27,44,.8)'; ctx.beginPath(); ctx.roundRect(W / 2 - tw / 2 - 12, H - 30, tw + 24, 22, 11); ctx.fill(); ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.fillText(hint, W / 2, H - 15); ctx.textAlign = 'left';
   const left = Math.max(0, Math.ceil((gs.startAt + DAY_MS - t) / 1000)), st = gs.streak || 0;
   document.getElementById('hud').innerHTML = `<span class="pill">Day ${gs.day}</span><span class="pill">⏱ ${left}s</span>
     <span class="pill">Today $${gs.dayEarned} / $${gs.target}</span><span class="pill">Wallet $${gs.money}</span>
     <span class="pill">Combo x${(1 + Math.min(st, 10) * .1).toFixed(1)}</span><span class="pill">😡 ${gs.angry || 0}/${MAX_ANGRY}</span>
-    ${ids.map((u, i) => `<span class="pill"><span class="dot" style="background:${HAT[i % 3]}"></span>${esc(players[u].name || '')}</span>`).join('')}`;
+    ${ids.map((u, i) => `<span class="pill"><span class="dot" style="background:${HAT[i % 3]}"></span>${hasCook() ? (players[u].role === 'cook' ? '👨‍🍳 ' : '🛼 ') : ''}${esc(players[u].name || '')}</span>`).join('')}`;
 }
 
 function drawTable(t, hot) {
@@ -368,4 +390,82 @@ function drawDish(k, x, y, s) {
     ctx.fillStyle = '#d62839'; ctx.beginPath(); ctx.arc(0, -23, 3, 0, 7); ctx.fill();
   }
   ctx.restore();
+}
+
+/* ---------- Cook role: own kitchen screen (tickets -> stoves -> counter) ---------- */
+const queued = list => list.filter(c => c.state === 'cooking' && !c.readyAt).sort((a, b) => a.t - b.t).slice(0, 6);
+const tRect = i => ({ x: 14 + i * 129, y: 14, w: 117, h: 112 });
+const sRect = i => ({ x: 50 + i * 250, y: 168, w: 200, h: 150 });
+const cSlot = i => ({ x: 105 + i * 118, y: 398 });
+const stoveCap = () => 2 + (gs.upgrades.chef >= 3 ? 1 : 0);
+const inR = (p, r) => p.x >= r.x && p.x <= r.x + r.w && p.y >= r.y && p.y <= r.y + r.h;
+const onStove = (list, i) => list.find(c => c.stove === i && (c.state === 'done' || (c.state === 'cooking' && c.readyAt)));
+
+function pickCook(p) {
+  const q = queued(custs());
+  for (let i = 0; i < q.length; i++) if (inR(p, tRect(i))) return { k: 'ticket', id: q[i].id };
+  for (let i = 0; i < 3; i++) if (inR(p, sRect(i))) return { k: 'stove', i };
+  return null;
+}
+async function cookClick(p) {
+  const h = pick(p); if (!h) return;
+  const list = custs();
+  if (h.k === 'ticket') { cookSel = cookSel === h.id ? null : h.id; return beep(520, .06); }
+  const i = h.i, c = onStove(list, i), cx = sRect(i).x + 100;
+  if (i >= stoveCap()) return say(cx, 240, '🔒 Chef Lv3', '#ff9f1c');
+  if (c && c.state === 'done') {                                        // move the finished dish to the counter
+    const r = await runTransaction(cref(c.id), v => v && v.state === 'done' ? { ...v, state: 'ready', t: now(), stove: null } : v);
+    if (r.committed) { beep(660, .1); say(cx, 190, 'Plated!', '#9ff0ff'); } return;
+  }
+  if (c) return say(cx, 240, 'Still cooking…', '#fff');
+  const q = queued(list), tk = q.find(x => x.id === cookSel) || q[0];
+  if (!tk) return say(cx, 240, 'No orders yet', '#fff');
+  cookSel = null;
+  runTransaction(cref(tk.id), v => v && v.state === 'cooking' && !v.readyAt ? { ...v, readyAt: now() + cookTime(), stove: i } : v); beep(600, .08);
+}
+function cookHint(list) {
+  if (list.some(c => c.state === 'done')) return 'Plate the finished dish before it burns!';
+  if (cookSel) return 'Now tap a free stove';
+  return queued(list).length ? 'Tap a ticket, then a free stove (or just a stove for the oldest)' : 'No orders yet. Waiters are seating guests…';
+}
+function drawKitchen(ts, t, list) {
+  ctx.fillStyle = '#e8eef2'; ctx.fillRect(0, 0, W, H);                  // tiled kitchen
+  ctx.strokeStyle = '#cdd7de'; ctx.lineWidth = 1;
+  for (let x = 0; x < W; x += 40) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke(); }
+  for (let y = 0; y < H; y += 40) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); }
+  ctx.fillStyle = lin(ctx, 0, 140, [[0, '#9aa7b2'], [1, '#5d6b78']]); ctx.fillRect(0, 0, W, 140);   // ticket rail
+  queued(list).forEach((c, i) => {
+    const r = tRect(i), on = cookSel === c.id, dy = on ? -8 : 0;
+    ctx.save(); ctx.shadowColor = 'rgba(0,0,0,.35)'; ctx.shadowBlur = 8; ctx.shadowOffsetY = 3; ctx.fillStyle = c.burnt ? '#ffd9c9' : '#fffdf5';
+    ctx.beginPath(); ctx.roundRect(r.x, r.y + dy, r.w, r.h, 6); ctx.fill(); ctx.restore();
+    if (on) { ctx.strokeStyle = '#2ec4b6'; ctx.lineWidth = 4; ctx.beginPath(); ctx.roundRect(r.x, r.y + dy, r.w, r.h, 6); ctx.stroke(); }
+    ctx.textAlign = 'center'; ctx.fillStyle = '#333'; ctx.font = 'bold 14px sans-serif'; ctx.fillText(`Table ${c.table + 1}${c.vip ? ' ⭐' : ''}`, r.x + r.w / 2, r.y + 22 + dy);
+    ctx.font = '40px sans-serif'; ctx.fillText(DISH[c.dish || 0], r.x + r.w / 2, r.y + 72 + dy);
+    if (c.burnt) { ctx.fillStyle = '#c1121f'; ctx.font = 'bold 11px sans-serif'; ctx.fillText('Re-cook!', r.x + r.w / 2, r.y + 90 + dy); }
+    meter(r.x + r.w / 2, r.y + 98 + dy, 1 - (t - (c.seatedAt || c.t)) / (pat(c) * 2.2));
+  });
+  for (let i = 0; i < 3; i++) {                                         // stoves
+    const r = sRect(i), cx = r.x + 100, cy = r.y + 78, c = onStove(list, i), locked = i >= stoveCap();
+    ctx.fillStyle = lin(ctx, r.y, r.y + r.h, [[0, '#3a4651'], [1, '#222b33']]); ctx.strokeStyle = hover?.k === 'stove' && hover.i === i ? '#fff' : '#111'; ctx.lineWidth = 4;
+    ctx.beginPath(); ctx.roundRect(r.x, r.y, r.w, r.h, 14); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = '#12171c'; ctx.beginPath(); ctx.arc(cx, cy, 54, 0, 7); ctx.fill(); ctx.textAlign = 'center';
+    if (locked) { ctx.fillStyle = '#9aa7b2'; ctx.font = 'bold 15px sans-serif'; ctx.fillText('🔒 Unlock: Chef Lv3', cx, cy + 5); continue; }
+    if (!c) { ctx.fillStyle = '#7f93a4'; ctx.font = 'bold 16px sans-serif'; ctx.fillText('Free stove', cx, cy + 5); continue; }
+    const done = c.state === 'done', prog = done ? 1 : Math.max(0, Math.min(1, 1 - (c.readyAt - t) / cookTime()));
+    if (!done) for (let k = 0; k < 8; k++) { const a = k / 8 * 6.28, f = 6 + Math.sin(ts / 90 + k * 2) * 4; ctx.fillStyle = 'rgba(255,150,30,.85)'; ctx.beginPath(); ctx.arc(cx + Math.cos(a) * 46, cy + Math.sin(a) * 46, f / 1.5, 0, 7); ctx.fill(); }
+    ctx.fillStyle = '#555'; ctx.beginPath(); ctx.ellipse(cx, cy, 40, 32, 0, 0, 7); ctx.fill(); drawDish(c.dish || 0, cx, cy - 4, 1.1);
+    ctx.strokeStyle = done ? '#34c759' : '#ffb020'; ctx.lineWidth = 8; ctx.beginPath(); ctx.arc(cx, cy, 58, -Math.PI / 2, -Math.PI / 2 + prog * 6.283); ctx.stroke();
+    ctx.fillStyle = '#fff'; ctx.font = 'bold 14px sans-serif';
+    if (done) { ctx.globalAlpha = .6 + Math.sin(ts / 120) * .4; ctx.fillStyle = '#34c759'; ctx.fillText('Tap to plate!', cx, r.y + r.h - 24); ctx.globalAlpha = 1; meter(cx, r.y + r.h - 12, 1 - (t - c.t) / STOVE_MS); }
+    else ctx.fillText(`Table ${c.table + 1}`, cx, r.y + r.h - 14);
+  }
+  ctx.fillStyle = lin(ctx, 350, H, [[0, '#cdd8e0'], [1, '#8da0ae']]); ctx.fillRect(0, 350, W, 100);   // counter strip
+  ctx.fillStyle = '#243447'; ctx.font = 'bold 12px sans-serif'; ctx.fillText('Counter: waiters collect from here', 130, 366);
+  readyList().forEach((c, i) => {
+    const s = cSlot(i), danger = t - c.t > BURN_MS - 4000;
+    ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.ellipse(s.x, s.y + 4, 34, 14, 0, 0, 7); ctx.fill();
+    drawDish(c.dish || 0, s.x, s.y - 4, .9);
+    if (danger && Math.sin(ts / 90) > 0) { ctx.strokeStyle = '#ff3b30'; ctx.lineWidth = 3; ctx.beginPath(); ctx.ellipse(s.x, s.y + 2, 38, 24, 0, 0, 7); ctx.stroke(); }
+  });
+  ctx.textAlign = 'left';
 }

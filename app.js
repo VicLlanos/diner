@@ -7,7 +7,7 @@ import { ref, set, get, onValue, update, remove, runTransaction, onDisconnect }
 import { startGame, stopGame } from './game.js';
 
 const $ = id => document.getElementById(id);
-const show = n => ['lobby', 'room', 'game'].forEach(s => $(s).classList.toggle('d-none', s !== n));
+const show = n => { ['lobby', 'room', 'game'].forEach(s => $(s).classList.toggle('d-none', s !== n)); document.body.classList.toggle('playing', n === 'game'); };
 const authModal = new bootstrap.Modal($('authModal'));
 let user = null, mySlot = null, code = null, isHost = false, inGame = false, unsubRoom = null;
 
@@ -16,7 +16,7 @@ onAuthStateChanged(auth, u => {
   user = u;
   $('btnOut').classList.toggle('d-none', !u);
   $('who').textContent = u ? (u.displayName || u.email) : '';
-  if (u) { authModal.hide(); show('lobby'); } else { leaveRoom(false); ['lobby','room','game'].forEach(s => $(s).classList.add('d-none')); authModal.show(); }
+  if (u) { authModal.hide(); show('lobby'); } else { leaveRoom(false); ['lobby','room','game'].forEach(s => $(s).classList.add('d-none')); document.body.classList.remove('playing'); authModal.show(); }
 });
 const authErr = e => $('authMsg').textContent = e.code ? e.code.replace('auth/', '').replace(/-/g, ' ') : e.message;
 $('btnSignIn').onclick = () => signInWithEmailAndPassword(auth, $('authEmail').value, $('authPass').value).catch(authErr);
@@ -35,7 +35,7 @@ $('btnOut').onclick = () => signOut(auth);
 /* ---------- Lobby ---------- */
 const ALPHA = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const rand4 = () => Array.from({ length: 4 }, () => ALPHA[Math.random() * ALPHA.length | 0]).join('');
-const me = () => ({ name: user.displayName || user.email, ready: false });
+const me = () => ({ name: user.displayName || user.email, ready: false, role: 'waiter' });
 const say = m => $('lobbyMsg').textContent = m;
 const esc = s => String(s).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
 
@@ -79,13 +79,18 @@ function enterRoom(c, host) {
       return;
     }
     const ids = [r.hostUid, ...Object.keys(r.players || {}).filter(i => i !== r.hostUid)];
+    const role0 = i => (r.players[i] && r.players[i].role) || 'waiter';
     $('players').innerHTML = [0, 1, 2].map(i => ids[i]
-      ? `<li class="list-group-item bg-transparent text-light d-flex justify-content-between"><span>${i ? '🐧' : '👑'} ${esc(r.players[ids[i]].name)}</span><span>${i ? (r.players[ids[i]].ready ? '✅ Ready' : 'Not ready') : 'Host'}</span></li>`
+      ? `<li class="list-group-item bg-transparent text-light d-flex justify-content-between"><span>${i ? '🐧' : '👑'} ${esc(r.players[ids[i]].name)}</span><span>${ids.length > 1 ? (role0(ids[i]) === 'cook' ? '👨‍🍳 Cook' : '🛼 Waiter') : ''} ${i ? (r.players[ids[i]].ready ? '✅' : '⏳') : ''}</span></li>`
       : `<li class="list-group-item bg-transparent text-secondary">Open seat</li>`).join('');
-    const guestsReady = ids.slice(1).every(i => r.players[i].ready);
+    const role = i => (r.players[i] && r.players[i].role) || 'waiter', cooks = ids.filter(i => role(i) === 'cook').length;
+    const guestsReady = ids.slice(1).every(i => r.players[i].ready), rolesOk = ids.length === 1 || cooks === 1;
+    $('btnRole').classList.toggle('d-none', ids.length < 2);
+    $('btnRole').textContent = role(user.uid) === 'cook' ? 'Switch to waiter' : 'Become the cook';
+    $('roleHint').textContent = ids.length < 2 ? 'Solo: you serve, and the kitchen runs itself.' : cooks === 1 ? '' : 'Exactly one player must be the cook.';
     $('btnStart').classList.toggle('d-none', !isHost);
     $('btnReady').classList.toggle('d-none', isHost);
-    $('btnStart').disabled = !guestsReady;
+    $('btnStart').disabled = !(guestsReady && rolesOk);
     $('btnStart').textContent = ids.length === 1 ? 'Play solo' : 'Start game';
   });
 }
@@ -114,3 +119,11 @@ function leaveRoom(cleanup = true, msg) {
   if (user) show('lobby');
   if (msg) say(msg);
 }
+
+$('btnRole').onclick = async () => {
+  const cur = (await get(ref(db, `rooms/${code}/players/${user.uid}/role`))).val();
+  update(ref(db, `rooms/${code}/players/${user.uid}`), { role: cur === 'cook' ? 'waiter' : 'cook' });
+};
+let deferredInstall;                                      // "Install app" button (Android/Chrome)
+addEventListener('beforeinstallprompt', e => { e.preventDefault(); deferredInstall = e; $('btnInstall').classList.remove('d-none'); });
+$('btnInstall').onclick = async () => { deferredInstall.prompt(); await deferredInstall.userChoice; deferredInstall = null; $('btnInstall').classList.add('d-none'); };

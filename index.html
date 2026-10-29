@@ -2,7 +2,11 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
   <title>Penguin Diner Co-op</title>
   <meta name="theme-color" content="#0e1b2c">
   <link rel="manifest" href="manifest.json">
@@ -11,9 +15,9 @@
   <link href="styles.css" rel="stylesheet">
 </head>
 <body>
-<nav class="container py-3 d-flex justify-content-between align-items-center">
+<nav class="navbar-row container py-3 d-flex justify-content-between align-items-center">
   <span class="brand h4 m-0">🐧 Penguin Diner</span>
-  <span><span id="who" class="me-2 small"></span><button id="btnOut" class="btn btn-sm btn-outline-info d-none">Sign out</button></span>
+  <span><button id="btnInstall" class="btn btn-sm btn-fish d-none me-2">Install app</button><span id="who" class="me-2 small"></span><button id="btnOut" class="btn btn-sm btn-outline-info d-none">Sign out</button></span>
 </nav>
 
 <main class="container pb-5">
@@ -37,6 +41,8 @@
     <div class="card-ice p-4 mx-auto" style="max-width:520px">
       <div>Room code</div><div id="roomCode" class="room-code"></div>
       <ul id="players" class="list-group list-group-flush my-3 text-start"></ul>
+      <button id="btnRole" class="btn btn-outline-info d-none mb-2 d-block mx-auto">Become the cook</button>
+      <p id="roleHint" class="small text-warning"></p>
       <button id="btnReady" class="btn btn-fish btn-lg">I'm ready</button>
       <button id="btnStart" class="btn btn-fish btn-lg d-none">Start game</button>
       <button id="btnLeave" class="btn btn-link text-info mt-2">Leave room</button>
@@ -68,6 +74,7 @@
     </div></div></div>
 </div>
 
+<div id="rotate"><div style="font-size:3rem">📱↻</div>Rotate your phone to landscape to play</div>
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 <script type="module" src="app.js"></script>
 <script>if ('serviceWorker' in navigator) addEventListener('load', () => navigator.serviceWorker.register('sw.js'));</script>
