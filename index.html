@@ -19,10 +19,10 @@
 <main class="container pb-5">
   <!-- Lobby -->
   <section id="lobby" class="d-none">
-    <h1 class="mb-4">Open the diner with a friend</h1>
+    <h1 class="mb-4">Open the diner: solo or with up to 2 friends</h1>
     <div class="row g-4">
       <div class="col-md-6"><div class="card-ice p-4 h-100">
-        <h2 class="h4">Host a room</h2><p>Get a 4-letter code and share it.</p>
+        <h2 class="h4">Host a room</h2><p>Play solo, or share the 4-letter code with up to 2 friends.</p>
         <button id="btnHost" class="btn btn-fish btn-lg">Host a room</button></div></div>
       <div class="col-md-6"><div class="card-ice p-4 h-100">
         <h2 class="h4">Join a room</h2>
@@ -38,6 +38,7 @@
       <div>Room code</div><div id="roomCode" class="room-code"></div>
       <ul id="players" class="list-group list-group-flush my-3 text-start"></ul>
       <button id="btnReady" class="btn btn-fish btn-lg">I'm ready</button>
+      <button id="btnStart" class="btn btn-fish btn-lg d-none">Start game</button>
       <button id="btnLeave" class="btn btn-link text-info mt-2">Leave room</button>
     </div>
   </section>

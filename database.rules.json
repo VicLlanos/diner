@@ -17,12 +17,14 @@
         ".validate": "$roomId.length === 4",
         ".read": "auth != null",
         ".write": "auth != null && ((!data.exists() && newData.child('hostUid').val() === auth.uid) || data.child('hostUid').val() === auth.uid)",
-        "guestUid": {
-          ".write": "auth != null && ((!data.exists() && newData.val() === auth.uid) || (data.val() === auth.uid && !newData.exists()))"
+        "slots": {
+          "$s": {
+            ".write": "auth != null && ($s === '1' || $s === '2') && ((!data.exists() && newData.val() === auth.uid) || (data.val() === auth.uid && !newData.exists()))"
+          }
         },
         "players": {
           "$pid": {
-            ".write": "auth != null && auth.uid === $pid && (data.exists() || $pid === root.child('rooms').child($roomId).child('hostUid').val() || !root.child('rooms').child($roomId).child('guestUid').exists())",
+            ".write": "auth != null && auth.uid === $pid && (data.exists() || $pid === root.child('rooms').child($roomId).child('hostUid').val() || !root.child('rooms').child($roomId).child('slots').child('1').exists() || !root.child('rooms').child($roomId).child('slots').child('2').exists())",
             ".validate": "newData.hasChildren(['name', 'ready'])"
           }
         },

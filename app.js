@@ -9,7 +9,7 @@ import { startGame, stopGame } from './game.js';
 const $ = id => document.getElementById(id);
 const show = n => ['lobby', 'room', 'game'].forEach(s => $(s).classList.toggle('d-none', s !== n));
 const authModal = new bootstrap.Modal($('authModal'));
-let user = null, code = null, isHost = false, inGame = false, unsubRoom = null;
+let user = null, mySlot = null, code = null, isHost = false, inGame = false, unsubRoom = null;
 
 /* ---------- Auth ---------- */
 onAuthStateChanged(auth, u => {
@@ -36,6 +36,8 @@ $('btnOut').onclick = () => signOut(auth);
 const ALPHA = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const rand4 = () => Array.from({ length: 4 }, () => ALPHA[Math.random() * ALPHA.length | 0]).join('');
 const me = () => ({ name: user.displayName || user.email, ready: false });
+const say = m => $('lobbyMsg').textContent = m;
+const esc = s => String(s).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
 
 $('btnHost').onclick = async () => {
   for (let i = 0; i < 5; i++) {               // retry on the rare code collision
@@ -44,49 +46,55 @@ $('btnHost').onclick = async () => {
       cur === null ? { hostUid: user.uid, status: 'lobby', players: { [user.uid]: me() } } : undefined);
     if (res.committed) return enterRoom(c, true);
   }
-  $('lobbyMsg').textContent = 'Could not create a room. Try again.';
+  say('Could not create a room. Try again.');
 };
 $('btnJoin').onclick = async () => {
   const c = $('joinCode').value.trim().toUpperCase();
-  const s = await get(ref(db, `rooms/${c}`));
-  const r = s.val();
-  if (!r || r.status !== 'lobby') return ($('lobbyMsg').textContent = 'No open room with that code.');
-  if (Object.keys(r.players || {}).length >= 2 && !r.players[user.uid]) return ($('lobbyMsg').textContent = 'That room is full.');
-  try { await update(ref(db, `rooms/${c}`), { [`players/${user.uid}`]: me(), guestUid: user.uid }); enterRoom(c, false); }
-  catch { $('lobbyMsg').textContent = 'Could not join that room.'; }
+  const r = (await get(ref(db, `rooms/${c}`))).val();
+  if (!r || r.status !== 'lobby') return say('No open room with that code.');
+  const free = ['1', '2'].filter(k => !(r.slots && r.slots[k]));
+  if (!free.length) return say('That room is full (3 players max).');
+  for (const k of free) {                      // two guests racing for a slot: loser tries the next one
+    try {
+      await update(ref(db, `rooms/${c}`), { [`players/${user.uid}`]: me(), [`slots/${k}`]: user.uid });
+      mySlot = k; return enterRoom(c, false);
+    } catch {}
+  }
+  say('Could not join that room.');
 };
 
 /* ---------- Room ---------- */
 function enterRoom(c, host) {
   code = c; isHost = host; inGame = false;
-  $('roomCode').textContent = c; $('lobbyMsg').textContent = ''; show('room');
-  // Disconnect handling: guest removes self, host closes the room.
+  $('roomCode').textContent = c; say(''); show('room');
+  // Disconnect handling: host closes the room, a guest frees their seat.
   if (host) onDisconnect(ref(db, `rooms/${c}/status`)).set('closed');
-  else onDisconnect(ref(db, `rooms/${c}`)).update({ [`players/${user.uid}`]: null, guestUid: null });
+  else onDisconnect(ref(db, `rooms/${c}`)).update({ [`players/${user.uid}`]: null, [`slots/${mySlot}`]: null });
 
   unsubRoom = onValue(ref(db, `rooms/${c}`), snap => {
     const r = snap.val();
     if (!r || r.status === 'closed') return leaveRoom(true, 'The host left. Room closed.');
-    const ids = Object.keys(r.players || {});
     if (r.status === 'playing') {
-      if (ids.length < 2) return leaveRoom(true, 'Your partner disconnected.');
       if (!inGame) { inGame = true; show('game'); startGame({ roomId: c, uid: user.uid, isHost, onExit: () => leaveRoom(true) }); }
       return;
     }
-    $('players').innerHTML = ids.map(id => `<li class="list-group-item bg-transparent text-light d-flex justify-content-between">
-      <span>${id === r.hostUid ? '👑 ' : '🐧 '}${esc(r.players[id].name)}</span><span>${r.players[id].ready ? '✅ Ready' : 'Waiting…'}</span></li>`).join('');
-    $('btnReady').disabled = ids.length < 2;
-    // Host launches the game once both are ready.
-    if (isHost && ids.length === 2 && ids.every(id => r.players[id].ready)) {
-      const t = now();
-      update(ref(db, `rooms/${c}`), { status: 'playing', gameState: {
-        phase: 'play', day: 1, startAt: t, target: 60, money: 0, dayEarned: 0, nextSpawn: t + 1500,
-        upgrades: { skates: 0, chef: 0, decor: 0 } } });
-    }
+    const ids = [r.hostUid, ...Object.keys(r.players || {}).filter(i => i !== r.hostUid)];
+    $('players').innerHTML = [0, 1, 2].map(i => ids[i]
+      ? `<li class="list-group-item bg-transparent text-light d-flex justify-content-between"><span>${i ? '🐧' : '👑'} ${esc(r.players[ids[i]].name)}</span><span>${i ? (r.players[ids[i]].ready ? '✅ Ready' : 'Not ready') : 'Host'}</span></li>`
+      : `<li class="list-group-item bg-transparent text-secondary">Open seat</li>`).join('');
+    const guestsReady = ids.slice(1).every(i => r.players[i].ready);
+    $('btnStart').classList.toggle('d-none', !isHost);
+    $('btnReady').classList.toggle('d-none', isHost);
+    $('btnStart').disabled = !guestsReady;
+    $('btnStart').textContent = ids.length === 1 ? 'Play solo' : 'Start game';
   });
 }
-const esc = s => s.replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
-
+$('btnStart').onclick = async () => {
+  const n = Object.keys((await get(ref(db, `rooms/${code}/players`))).val() || {}).length, t = now();
+  update(ref(db, `rooms/${code}`), { status: 'playing', gameState: {
+    phase: 'play', day: 1, startAt: t, target: Math.round(60 * (1 + 0.5 * (n - 1))), money: 0, dayEarned: 0,
+    nextSpawn: t + 1500, upgrades: { skates: 0, chef: 0, decor: 0 } } });
+};
 $('btnReady').onclick = async () => {
   const s = await get(ref(db, `rooms/${code}/players/${user.uid}/ready`));
   update(ref(db, `rooms/${code}/players/${user.uid}`), { ready: !s.val() });
@@ -98,11 +106,11 @@ function leaveRoom(cleanup = true, msg) {
   stopGame();
   if (code && user && cleanup) {
     onDisconnect(ref(db, `rooms/${code}`)).cancel();
-    onDisconnect(ref(db, `rooms/${code}/players/${user.uid}`)).cancel();
     onDisconnect(ref(db, `rooms/${code}/status`)).cancel();
-    (isHost ? remove(ref(db, `rooms/${code}`)) : update(ref(db, `rooms/${code}`), { [`players/${user.uid}`]: null, guestUid: null })).catch(() => {});
+    (isHost ? remove(ref(db, `rooms/${code}`))
+            : update(ref(db, `rooms/${code}`), { [`players/${user.uid}`]: null, [`slots/${mySlot}`]: null })).catch(() => {});
   }
-  code = null; inGame = false;
+  code = null; mySlot = null; inGame = false;
   if (user) show('lobby');
-  if (msg) $('lobbyMsg').textContent = msg;
+  if (msg) say(msg);
 }
