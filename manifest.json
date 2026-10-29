@@ -1,0 +1,13 @@
+{
+  "name": "Penguin Diner Co-op",
+  "short_name": "Penguin Diner",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "landscape",
+  "background_color": "#0e1b2c",
+  "theme_color": "#0e1b2c",
+  "icons": [
+    { "src": "icons/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

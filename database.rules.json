@@ -1,0 +1,35 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+    "users": {
+      "$uid": {
+        ".read": "auth != null",
+        ".write": "auth != null && auth.uid === $uid",
+        ".validate": "newData.hasChildren(['name'])",
+        "name": {
+          ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 30"
+        }
+      }
+    },
+    "rooms": {
+      "$roomId": {
+        ".validate": "$roomId.length === 4",
+        ".read": "auth != null",
+        ".write": "auth != null && ((!data.exists() && newData.child('hostUid').val() === auth.uid) || data.child('hostUid').val() === auth.uid)",
+        "guestUid": {
+          ".write": "auth != null && ((!data.exists() && newData.val() === auth.uid) || (data.val() === auth.uid && !newData.exists()))"
+        },
+        "players": {
+          "$pid": {
+            ".write": "auth != null && auth.uid === $pid && (data.exists() || $pid === root.child('rooms').child($roomId).child('hostUid').val() || !root.child('rooms').child($roomId).child('guestUid').exists())",
+            ".validate": "newData.hasChildren(['name', 'ready'])"
+          }
+        },
+        "gameState": {
+          ".write": "auth != null && root.child('rooms').child($roomId).child('players').child(auth.uid).exists()"
+        }
+      }
+    }
+  }
+}

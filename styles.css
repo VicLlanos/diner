@@ -1,0 +1,12 @@
+:root { --ink:#0e1b2c; --ice:#9ff0ff; --fish:#ff9f1c; --card:#16283f; }
+body { background: radial-gradient(circle at 20% 0%, #1f4068 0%, var(--ink) 60%); color:#eaf6ff; min-height:100vh; font-family:"Trebuchet MS","Segoe UI",sans-serif; }
+h1,h2,.brand { font-family:"Arial Rounded MT Bold","Trebuchet MS",sans-serif; letter-spacing:.5px; }
+.card-ice { background:var(--card); border:2px solid #2c4a6e; border-radius:1.25rem; box-shadow:0 8px 0 #0a1320; }
+.btn-fish { background:var(--fish); color:#2a1700; font-weight:700; border:0; border-radius:.9rem; box-shadow:0 4px 0 #b86f00; transition:transform .1s, box-shadow .1s; }
+.btn-fish:hover { transform:translateY(-2px); box-shadow:0 6px 0 #b86f00; color:#2a1700; }
+.btn-fish:active { transform:translateY(3px); box-shadow:0 1px 0 #b86f00; }
+.room-code { font-size:3rem; letter-spacing:.5rem; color:var(--ice); font-weight:800; }
+#game canvas { width:100%; max-width:960px; aspect-ratio:16/9; border-radius:1rem; border:3px solid #2c4a6e; touch-action:manipulation; background:#bfe6f5; display:block; margin:auto; }
+#hud { max-width:960px; margin:0 auto .5rem; font-weight:700; }
+#shop { position:fixed; inset:0; background:#000a; display:flex; align-items:center; justify-content:center; z-index:1050; }
+@media (prefers-reduced-motion: reduce) { * { transition:none !important; } }
